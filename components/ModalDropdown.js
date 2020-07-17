@@ -23,6 +23,7 @@ import {
 
 import ListView from "deprecated-react-native-listview";
 import PropTypes from 'prop-types';
+import _ from 'lodash';
 
 const TOUCHABLE_ELEMENTS = [
   'TouchableHighlight',
@@ -81,37 +82,58 @@ export default class ModalDropdown extends Component {
 
     this.state = {
       accessible: !!props.accessible,
-      loading: !props.options,
+      loading: _.isEmpty(props.options),
       showDropdown: false,
       buttonText: props.defaultValue,
-      selectedIndex: props.defaultIndex
+      selectedIndex: props.defaultIndex,
+      width: false,
     };
   }
 
-  componentWillReceiveProps(nextProps) {
-    let {buttonText, selectedIndex} = this.state;
-    const {defaultIndex, defaultValue, options} = nextProps;
-    buttonText = this._nextValue == null ? buttonText : this._nextValue;
-    selectedIndex = this._nextIndex == null ? selectedIndex : this._nextIndex;
-    if (selectedIndex < 0) {
-      selectedIndex = defaultIndex;
+  componentDidUpdate(prevProps) {
+    const nextProps = this.props;
+
+    if (
+      nextProps.defaultIndex !== prevProps.defaultIndex ||
+      nextProps.defaultValue !== prevProps.defaultValue ||
+      !_.isEqual(nextProps.options, prevProps.options)
+    ) {
+      const {defaultIndex, defaultValue, options} = nextProps;
+
+      let {buttonText, selectedIndex} = this.state;
+      buttonText = this._nextValue == null ? buttonText : this._nextValue;
+      selectedIndex = this._nextIndex == null ? selectedIndex : this._nextIndex;
       if (selectedIndex < 0) {
-        buttonText = defaultValue;
+        selectedIndex = defaultIndex;
+        if (selectedIndex < 0) {
+          buttonText = defaultValue;
+        }
       }
+      this._nextValue = null;
+      this._nextIndex = null;
+
+      this.setState({
+        buttonText,
+        loading: _.isEmpty(options),
+        selectedIndex,
+      });
     }
-    this._nextValue = null;
-    this._nextIndex = null;
+  }
+
+  _onLayout(event) {
+    const width = _.get(event, 'nativeEvent.layout.width', false);
 
     this.setState({
-      loading: !options,
-      buttonText,
-      selectedIndex
+      width,
     });
   }
 
   render() {
     return (
-      <View {...this.props}>
+      <View
+        {...this.props}
+        onLayout={(event) => this._onLayout(event)}
+      >
         {this._renderButton()}
         {this._renderModal()}
       </View>
@@ -197,10 +219,10 @@ export default class ModalDropdown extends Component {
   };
 
   _renderModal() {
-    const {animated, accessible, dropdownStyle} = this.props;
+    const {animated, accessible, dropdownStyle, topDropdownStyle = {}, bottomDropdownStyle = {}} = this.props;
     const {showDropdown, loading} = this.state;
     if (showDropdown && this._buttonFrame) {
-      const frameStyle = this._calcPosition();
+      const {frameStyle, showInBottom} = this._calcPosition();
       const animationType = animated ? 'fade' : 'none';
       return (
         <Modal animationType={animationType}
@@ -214,7 +236,7 @@ export default class ModalDropdown extends Component {
                                     onPress={this._onModalPress}
           >
             <View style={styles.modal}>
-              <View style={[styles.dropdown, dropdownStyle, frameStyle]}>
+              <View style={[styles.dropdown, dropdownStyle, frameStyle, showInBottom ? bottomDropdownStyle : topDropdownStyle]}>
                 {loading ? this._renderLoading() : this._renderDropdown()}
               </View>
             </View>
@@ -234,28 +256,41 @@ export default class ModalDropdown extends Component {
     const dropdownHeight = (dropdownStyle && StyleSheet.flatten(dropdownStyle).height) ||
       StyleSheet.flatten(styles.dropdown).height;
 
+    const borderWidth = (style.borderWidth || 0);
+    const offsetX = this._buttonFrame.x - borderWidth;
+    const offsetY = (style.borderWidth || 0);
+
     const bottomSpace = windowHeight - this._buttonFrame.y - this._buttonFrame.h;
-    const rightSpace = windowWidth - this._buttonFrame.x;
+    const rightSpace = windowWidth - offsetX;
     const showInBottom = bottomSpace >= dropdownHeight || bottomSpace >= this._buttonFrame.y;
-    const showInLeft = rightSpace >= this._buttonFrame.x;
+    const showInLeft = rightSpace >= offsetX && false;
 
     const positionStyle = {
       height: dropdownHeight,
-      top: showInBottom ? this._buttonFrame.y + this._buttonFrame.h : Math.max(0, this._buttonFrame.y - dropdownHeight),
+      top: showInBottom ? this._buttonFrame.y + this._buttonFrame.h - 10 : Math.max(0, this._buttonFrame.y - dropdownHeight) + borderWidth + 1,
     };
 
     if (showInLeft) {
-      positionStyle.left = this._buttonFrame.x;
+      positionStyle.left = offsetX;
     } else {
       const dropdownWidth = (dropdownStyle && StyleSheet.flatten(dropdownStyle).width) ||
         (style && StyleSheet.flatten(style).width) || -1;
       if (dropdownWidth !== -1) {
         positionStyle.width = dropdownWidth;
       }
-      positionStyle.right = rightSpace - this._buttonFrame.w;
+
+      if (this.state.width) {
+        positionStyle.width = this.state.width;
+      }
+
+      positionStyle.left = offsetX;
+      positionStyle.right = rightSpace - offsetX;
     }
 
-    return adjustFrame ? adjustFrame(positionStyle) : positionStyle;
+    return {
+      frameStyle: adjustFrame ? adjustFrame(positionStyle) : positionStyle,
+      showInBottom,
+    };
   }
 
   _onRequestClose = () => {
@@ -275,15 +310,15 @@ export default class ModalDropdown extends Component {
   };
 
   _renderLoading() {
-    return (
-      <ActivityIndicator size='small'/>
-    );
+    const {renderLoading} = this.props;
+    return renderLoading ? renderLoading() : <ActivityIndicator size="small" />;
   }
 
   _renderDropdown() {
     const {scrollEnabled, renderSeparator, showsVerticalScrollIndicator, keyboardShouldPersistTaps} = this.props;
     return (
       <ListView scrollEnabled={scrollEnabled}
+                enableEmptySections
                 style={styles.list}
                 dataSource={this._dataSource}
                 renderRow={this._renderRow}
@@ -304,10 +339,13 @@ export default class ModalDropdown extends Component {
   }
 
   _renderRow = (rowData, sectionID, rowID, highlightRow) => {
-    const {renderRow, dropdownTextStyle, dropdownTextHighlightStyle, accessible} = this.props;
+    const {renderRow, dropdownTextStyle, dropdownTextHighlightStyle, accessible, renderButtonText} = this.props;
     const {selectedIndex} = this.state;
     const key = `row_${rowID}`;
     const highlighted = rowID == selectedIndex;
+    const label = renderButtonText
+      ? renderButtonText(rowData)
+      : rowData.toString();
     const row = !renderRow ?
       (<Text style={[
         styles.rowText,
@@ -316,7 +354,7 @@ export default class ModalDropdown extends Component {
         highlighted && dropdownTextHighlightStyle
       ]}
       >
-        {rowData}
+        {label}
       </Text>) :
       renderRow(rowData, rowID, highlighted);
     const preservedProps = {
